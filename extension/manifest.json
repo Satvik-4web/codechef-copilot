@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "CodeChef Copilot — AI Coding Companion",
+  "version": "1.0.5",
+  "description": "Local-first AI coding companion for CodeChef. Real-time problem extraction, graduated hints, algorithmic complexity, and Docker-backed test runner.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "CodeChef Copilot",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "storage",
+    "clipboardWrite",
+    "clipboardRead"
+  ],
+  "host_permissions": [
+    "*://*/*",
+    "https://*.codechef.com/*",
+    "https://codechef.com/*",
+    "http://127.0.0.1:8000/*",
+    "http://localhost:8000/*"
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.codechef.com/*",
+        "https://codechef.com/*"
+      ],
+      "js": ["course-flow.js", "content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

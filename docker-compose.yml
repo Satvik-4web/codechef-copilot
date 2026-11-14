@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  execution-runner:
+    build:
+      context: ./execution
+      dockerfile: Dockerfile.cpp
+    image: codechef-copilot-cpp:latest
+    container_name: codechef-copilot-sandbox
+    network_mode: none
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 256M
+          pids: 64

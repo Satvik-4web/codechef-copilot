@@ -1,0 +1,50 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+backend/venv/
+backend/.venv/
+env/
+venv/
+ENV/
+
+# Database
+*.db
+*.sqlite3
+*.db-journal
+
+# Browser automation persistent profile & session data
+.codechef_profile/
+*.session
+*.cookie
+
+# Execution temporary files & binaries
+execution/temp/
+*.exe
+*.out
+*.o
+*.obj
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

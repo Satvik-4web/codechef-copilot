@@ -148,15 +148,56 @@
     });
   }
 
+  function triggerSaveFile() {
+    const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+    const saveEvents = [
+      new KeyboardEvent("keydown", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true, view: window }),
+      new KeyboardEvent("keypress", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true, view: window }),
+      new KeyboardEvent("keyup", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true, view: window })
+    ];
+
+    const targets = [
+      document.activeElement,
+      document.querySelector(".monaco-editor textarea, textarea.inputarea, textarea"),
+      document.querySelector(".monaco-editor"),
+      document.body,
+      document,
+      window
+    ].filter(Boolean);
+
+    for (const target of targets) {
+      for (const ev of saveEvents) {
+        try { target.dispatchEvent(ev); } catch (_) {}
+      }
+    }
+  }
+
+  function injectCodeDirectly(newCode) {
+    const ta = document.querySelector(".monaco-editor textarea, textarea.inputarea, textarea");
+    if (ta) {
+      ta.focus();
+      const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+      ta.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "a", code: "KeyA", keyCode: 65, which: 65,
+        ctrlKey: !isMac, metaKey: isMac,
+        bubbles: true, cancelable: true, view: window
+      }));
+      try { document.execCommand("selectAll", false, null); } catch (_) {}
+      try { document.execCommand("insertText", false, newCode); } catch (_) {}
+      triggerSaveFile();
+    }
+  }
+
   function readExecutionFeedback() {
     // Only inspect the left sidebar test results container to avoid stale terminal backlog
     const result = CodeChefCourseFlow.codeResult(document);
     const testPanel = document.querySelector("div[class*='test'], div[class*='Test'], #test-results, [class*='test-results']");
-    const panelText = testPanel ? testPanel.innerText : result.output;
+    const panelText = (testPanel ? testPanel.innerText : "") || result.output || "";
+    const combined = panelText.includes("Test 1") ? panelText : (panelText + "\n" + (result.output || ""));
     return {
       hasError: result.status === "failed",
-      errorSnippet: panelText.slice(0, 1000),
-      fullOutput: panelText
+      errorSnippet: combined.slice(0, 1500),
+      fullOutput: combined
     };
   }
 
@@ -184,7 +225,9 @@
     return { submitBtn, runBtn, nextBtn };
   }
 
-  function clickSubmitButton() {
+  async function clickSubmitButton() {
+    triggerSaveFile();
+    await delay(300);
     const { submitBtn } = getActionButtons();
     if (submitBtn) {
       submitBtn.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -195,7 +238,9 @@
     return false;
   }
 
-  function clickRunButton() {
+  async function clickRunButton() {
+    triggerSaveFile();
+    await delay(300);
     const { runBtn } = getActionButtons();
     if (runBtn) {
       runBtn.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -401,7 +446,7 @@
     if (!submitBtn && runBtn) {
       console.log("[CodeChef Copilot] Worked Example detected (no Submit button). Running code in terminal...");
       setStatus("Running worked example...");
-      clickRunButton();
+      await clickRunButton();
       await delay(3500); // Give python code time to execute in terminal
       setStatus("Example executed! Next...");
       await delay(800);
@@ -417,7 +462,7 @@
     if (CodeChefCourseFlow.shouldTestExistingCode(editorCode) &&
         CodeChefCourseFlow.codeResult(document).status === "pending") {
       setStatus("Testing existing code...");
-      if (clickSubmitButton()) {
+      if (await clickSubmitButton()) {
         const existingResult = await waitForResult(() =>
           CodeChefCourseFlow.codeResult(document).status, "pending", 30000);
         if (existingResult === "passed" || isSolvedBannerPresent()) {
@@ -463,9 +508,9 @@
       await delay(600);
 
       // Submit code
-      const submitted = clickSubmitButton();
+      const submitted = await clickSubmitButton();
       if (!submitted) {
-        clickRunButton();
+        await clickRunButton();
       }
 
       // Wait loop: Poll every 600ms until all tests on screen have green ticks!
@@ -513,9 +558,13 @@
         title: problem.title
       });
 
-      const fixed = healed?.status === "ok" && healed.injected ? healed.data?.fixed_code : null;
+      const fixed = healed?.status === "ok" ? healed.data?.fixed_code : null;
       if (fixed) {
         code = fixed;
+        if (!healed.injected) {
+          injectCodeDirectly(fixed);
+        }
+        triggerSaveFile();
         await delay(800);
       }
     }

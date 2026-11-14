@@ -211,6 +211,40 @@ async function executeCleanInjection(tabId, solutionCode) {
         }
       }
 
+      // Universal Save Trigger: Commit dirty Monaco buffer to container workspace disk
+      if (replaced) {
+        try {
+          const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+          const saveEvents = [
+            new KeyboardEvent("keydown", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true, composed: true, view: window }),
+            new KeyboardEvent("keypress", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true, composed: true, view: window }),
+            new KeyboardEvent("keyup", { key: "s", code: "KeyS", keyCode: 83, which: 83, ctrlKey: !isMac, metaKey: isMac, bubbles: true, cancelable: true, composed: true, view: window })
+          ];
+
+          const targets = [
+            document.activeElement,
+            document.querySelector(".monaco-editor textarea, textarea.inputarea, textarea"),
+            document.querySelector(".monaco-editor"),
+            document.body,
+            document,
+            window
+          ].filter(Boolean);
+
+          for (const target of targets) {
+            for (const ev of saveEvents) {
+              try { target.dispatchEvent(ev); } catch (_) {}
+            }
+          }
+
+          if (window.monaco?.editor?.getEditors) {
+            for (const ed of window.monaco.editor.getEditors()) {
+              try { ed.trigger("copilot", "workbench.action.files.save"); } catch (_) {}
+              try { ed.getAction("workbench.action.files.save")?.run(); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
+
       return replaced;
     }, [solutionCode]);
 

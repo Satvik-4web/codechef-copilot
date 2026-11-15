@@ -261,7 +261,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (message.action === "INJECT_CODE" && Number.isInteger(message.tabId) ? message.tabId : null);
 
   if (message.action === "GET_ASSISTANT_STATUS") {
-    fetch("http://127.0.0.1:8000/api/assistant/status")
+    fetch("http://127.0.0.1:8008/api/assistant/status")
       .then((res) => {
         if (!res.ok) throw new Error(`Backend status HTTP ${res.status}`);
         return res.json();
@@ -272,7 +272,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "CALL_AUTO_SOLVE") {
-    fetch("http://127.0.0.1:8000/api/assistant/auto-solve", {
+    fetch("http://127.0.0.1:8008/api/assistant/auto-solve", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message.payload)
@@ -300,7 +300,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "CALL_AUTO_HEAL") {
-    fetch("http://127.0.0.1:8000/api/assistant/auto-heal", {
+    fetch("http://127.0.0.1:8008/api/assistant/auto-heal", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message.payload)
@@ -326,7 +326,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "CALL_SOLVE_MCQ") {
-    fetch("http://127.0.0.1:8000/api/assistant/solve-mcq", {
+    fetch("http://127.0.0.1:8008/api/assistant/solve-mcq", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(message.payload)

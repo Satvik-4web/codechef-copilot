@@ -15,7 +15,7 @@ import type {
   PrepareSubmissionResponse,
 } from '../types';
 
-const BASE_URL = 'http://127.0.0.1:8000/api';
+const BASE_URL = 'http://127.0.0.1:8008/api';
 
 async function handleResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {

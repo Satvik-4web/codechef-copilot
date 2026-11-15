@@ -7,7 +7,7 @@ class Settings(BaseSettings):
 
     APP_ENV: str = "development"
     BACKEND_HOST: str = "127.0.0.1"
-    BACKEND_PORT: int = 8000
+    BACKEND_PORT: int = 8008
     FRONTEND_ORIGIN: str = "http://localhost:5173"
     DATABASE_URL: str = "sqlite:///./codechef_copilot.db"
 

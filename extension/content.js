@@ -690,7 +690,7 @@
         assistantStatusText = `Backend online; provider: ${provider}; API key configured: ${api_key_configured ? "yes" : "no"}.`;
         pill.querySelector(".ccc-badge").textContent = api_key_configured ? "AI" : "OFF";
       } else {
-        assistantStatusText = "Backend offline at 127.0.0.1:8000.";
+        assistantStatusText = "Backend offline at 127.0.0.1:8008.";
         pill.querySelector(".ccc-badge").textContent = "OFF";
       }
       pill.title = assistantStatusText;

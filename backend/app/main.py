@@ -58,6 +58,7 @@ app.include_router(history_router)
 app.include_router(settings_router)
 app.include_router(agent_router)
 
+@app.get("/health")
 @app.get("/api/health")
 async def health_check():
     return {

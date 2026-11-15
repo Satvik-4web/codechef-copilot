@@ -1,6 +1,6 @@
 // CodeChef Copilot — Side Panel Controller & Fast Auto-Pilot Engine
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = "http://127.0.0.1:8008";
 
 let activeProblem = null;
 let isRunningAutoPilot = false;

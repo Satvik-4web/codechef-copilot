@@ -61,6 +61,53 @@ async def dismiss_modals(page: Page):
         pass
 
 
+async def check_and_handle_login(page: Page) -> bool:
+    """Detects if CodeChef is showing a login modal/page or 403 unauthorised, and prompts/waits for login."""
+    state = await page.evaluate("""() => {
+        const b = document.body ? document.body.innerText : '';
+        const isLoggedOutMsg = /Continue with Google/i.test(b) || /login to codechef/i.test(b) || /you have been logged out/i.test(b) || (location.pathname === '/login');
+        const is403 = /not authorised to access this content/i.test(b) || (b.includes('403') && /authorised/i.test(b));
+        const hasLoginBtn = Array.from(document.querySelectorAll('a, button')).some(el => (el.innerText || '').trim().toLowerCase() === 'login');
+        const hasProfile = /Hello,/i.test(b) || document.querySelector("[class*='profile'], [class*='avatar'], [href*='/users/']") !== null;
+        return { isLoggedOutMsg, is403, hasLoginBtn, hasProfile };
+    }""")
+
+    needs_login = state.get("isLoggedOutMsg") or state.get("is403") or (state.get("hasLoginBtn") and not state.get("hasProfile"))
+
+    if needs_login:
+        log("⚠️  CODECHEF SESSION LOGGED OUT / UNAUTHORIZED!")
+        log("👉  Please log in to CodeChef in the opened Chrome window (Click 'Login' -> 'Continue with Google').")
+        log("👉  The runner will automatically detect your login and start solving immediately!")
+
+        # If on 403 page or has Login button, click Login button so modal/page is ready for user
+        if state.get("is403") or (state.get("hasLoginBtn") and not state.get("hasProfile")):
+            try:
+                login_btn = page.locator("a, button").filter(has_text=re.compile(r"^login$", re.I)).first
+                if await login_btn.count() > 0 and await login_btn.is_visible():
+                    await login_btn.click()
+            except Exception:
+                pass
+
+        for _ in range(150):
+            await asyncio.sleep(2.0)
+            logged_in = await page.evaluate("""() => {
+                const b = document.body ? document.body.innerText : '';
+                const is403 = /not authorised to access this content/i.test(b);
+                const isLogin = /Continue with Google/i.test(b) || /login to codechef/i.test(b) || (location.pathname === '/login');
+                const hasProfile = /Hello,/i.test(b) || document.querySelector("[class*='profile'], [class*='avatar'], [href*='/users/']") !== null;
+                return !is403 && !isLogin && hasProfile;
+            }""")
+            if logged_in:
+                log("🎉 Login detected! Resuming autonomous speedrun in 2 seconds...")
+                await asyncio.sleep(2.0)
+                if "tiet-uml501-ml-2026" not in page.url:
+                    await page.goto(DEFAULT_COURSE_URL, timeout=30000)
+                    await asyncio.sleep(2.0)
+                return True
+        return False
+    return True
+
+
 async def click_next_button(page: Page) -> bool:
     """Clicks Move to next problem or header Next button using real Playwright clicks."""
     await dismiss_modals(page)
@@ -119,14 +166,22 @@ async def handle_course_overview(page: Page) -> bool:
             await asyncio.sleep(3.0)
             return True
 
-    # Try clicking first topic/lesson item
+    # Try clicking Resume via DOM query
     clicked = await page.evaluate("""() => {
-        const item = document.querySelector("[class*='topic'], [class*='lesson'], [class*='item'], div[class*='problem']");
+        const resumeBtn = Array.from(document.querySelectorAll("button, a, [role='button'], div")).find(el => {
+            const t = (el.innerText || "").trim().toLowerCase();
+            return t === "resume" || t === "start learning" || t === "continue";
+        });
+        if (resumeBtn) {
+            resumeBtn.click();
+            return true;
+        }
+        const item = document.querySelector("a[href*='/problems/'], [class*='problem-card'] a, [class*='module'] a");
         if (item) { item.click(); return true; }
         return false;
     }""")
     if clicked:
-        log("Course Overview: Clicked topic item...")
+        log("Course Overview: Clicked Resume or problem link...")
         await asyncio.sleep(3.0)
         return True
 
@@ -449,8 +504,25 @@ async def solve_coding(page: Page):
                 current_code = fixed
 
     log("[Coding] Retries exhausted. Advancing...")
+    prev_url = page.url
     await click_next_button(page)
-    await asyncio.sleep(2.0)
+    await asyncio.sleep(3.0)
+
+    # If Next button in header was disabled or did not advance URL, attempt direct topic link navigation
+    if page.url == prev_url:
+        log("[Coding] URL unchanged after Next click. Clicking next problem from syllabus sidebar...")
+        await page.evaluate("""() => {
+            const links = Array.from(document.querySelectorAll("a[href*='/problems/']"));
+            const curIdx = links.findIndex(a => a.href === location.href || location.href.includes(a.getAttribute('href')));
+            if (curIdx >= 0 && links[curIdx + 1]) {
+                links[curIdx + 1].click();
+            } else if (links.length > 0) {
+                // Click next visible sibling
+                const nextBtn = document.querySelector("button:has-text('Next'), [aria-label*='Next'], [class*='next']");
+                if (nextBtn) nextBtn.click();
+            }
+        }""")
+        await asyncio.sleep(2.5)
 
 
 async def main():
@@ -459,33 +531,45 @@ async def main():
     log("=" * 65)
 
     async with async_playwright() as p:
-        profile_dir = Path(__file__).parent / ".codechef_profile"
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        log(f"Launching persistent Chrome window (profile: {profile_dir})...")
+        context = None
 
+        # Option 1: Connect to existing Chrome session on port 9222 if user launched it
         try:
-            context = await p.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                channel="chrome",
-                headless=False,
-                viewport={"width": 1366, "height": 850},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-default-browser-check"
-                ]
-            )
+            cdp_browser = await p.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=2000)
+            context = cdp_browser.contexts[0] if cdp_browser.contexts else cdp_browser
+            log("Connected to existing Chrome browser on port 9222!")
         except Exception:
-            context = await p.chromium.launch_persistent_context(
-                user_data_dir=str(profile_dir),
-                headless=False,
-                viewport={"width": 1366, "height": 850},
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-first-run",
-                    "--no-default-browser-check"
-                ]
-            )
+            pass
+
+        # Option 2: Launch persistent profile context
+        if not context:
+            profile_dir = Path(__file__).parent / ".codechef_profile"
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            log(f"Launching persistent Chrome window (profile: {profile_dir})...")
+
+            try:
+                context = await p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    channel="chrome",
+                    headless=False,
+                    viewport={"width": 1366, "height": 850},
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-first-run",
+                        "--no-default-browser-check"
+                    ]
+                )
+            except Exception:
+                context = await p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    viewport={"width": 1366, "height": 850},
+                    args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-first-run",
+                        "--no-default-browser-check"
+                    ]
+                )
 
         # Get or create initial page and navigate directly to the course
         page = await get_active_page(context)
@@ -511,6 +595,12 @@ async def main():
 
                 url = page.url
 
+                # Check login status
+                logged_in = await check_and_handle_login(page)
+                if not logged_in:
+                    await asyncio.sleep(2.0)
+                    continue
+
                 # If on course overview / syllabus without /problems/, click Resume!
                 if "codechef.com/learn/course/" in url and "/problems/" not in url:
                     entered = await handle_course_overview(page)
@@ -518,8 +608,9 @@ async def main():
                         await asyncio.sleep(3.0)
                         continue
 
-                if "codechef.com/learn/course/" not in url:
-                    log(f"Waiting for course page (current URL: {url})...")
+                if "codechef.com/learn/course/tiet-uml501-ml-2026" not in url and not url.startswith("https://www.codechef.com/login") and "accounts.google.com" not in url:
+                    log(f"Navigating back to course URL from: {url}...")
+                    await page.goto(DEFAULT_COURSE_URL, timeout=30000)
                     await asyncio.sleep(3.0)
                     continue
 

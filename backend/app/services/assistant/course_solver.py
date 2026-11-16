@@ -55,9 +55,84 @@ class CourseProblemSolver:
             )
 
         # -------------------------------------------------------------------------
-        # Case 2: Accuracy Score (scikit-learn)
+        # Case 2: Multi-Metric Classification Model Evaluation (JEWRKJ120 / Heart Disease)
         # -------------------------------------------------------------------------
-        if "accuracy" in statement_lower or "accuracy_score" in statement_lower or "accuracy" in title_lower:
+        if "classificationmetricsevaluator" in code.lower() or "classification model evaluation" in title_lower or "classification model evaluation" in statement_lower or ("roc-auc" in statement_lower and "actualclass" in statement_lower):
+            return (
+                "import pandas as pd\n"
+                "from sklearn.metrics import (\n"
+                "    accuracy_score,\n"
+                "    precision_score,\n"
+                "    recall_score,\n"
+                "    f1_score,\n"
+                "    roc_auc_score\n"
+                ")\n\n\n"
+                "class ClassificationMetricsEvaluator:\n"
+                "    \"\"\"\n"
+                "    Evaluate a classification model\n"
+                "    using multiple evaluation metrics.\n"
+                "    \"\"\"\n\n"
+                "    def __init__(self):\n"
+                "        self.dataset = None\n"
+                "        self.y_true = None\n"
+                "        self.y_pred = None\n"
+                "        self.y_score = None\n"
+                "        self.accuracy = None\n"
+                "        self.precision = None\n"
+                "        self.recall = None\n"
+                "        self.f1 = None\n"
+                "        self.roc_auc = None\n\n"
+                "    def load_dataset(self):\n"
+                "        # Load the CSV file\n"
+                "        self.dataset = pd.read_csv('dataset.csv')\n"
+                "        return self.dataset\n\n"
+                "    def prepare_data(self):\n"
+                "        # Store the actual class labels\n"
+                "        self.y_true = self.dataset['ActualClass']\n"
+                "        # Store the predicted class labels\n"
+                "        self.y_pred = self.dataset['PredictedClass']\n"
+                "        # Store the predicted probabilities\n"
+                "        self.y_score = self.dataset['PredictedProbability']\n"
+                "        return self.y_true, self.y_pred, self.y_score\n\n"
+                "    def calculate_accuracy(self):\n"
+                "        self.accuracy = accuracy_score(self.y_true, self.y_pred)\n"
+                "        return self.accuracy\n\n"
+                "    def calculate_precision(self):\n"
+                "        self.precision = precision_score(self.y_true, self.y_pred)\n"
+                "        return self.precision\n\n"
+                "    def calculate_recall(self):\n"
+                "        self.recall = recall_score(self.y_true, self.y_pred)\n"
+                "        return self.recall\n\n"
+                "    def calculate_f1(self):\n"
+                "        self.f1 = f1_score(self.y_true, self.y_pred)\n"
+                "        return self.f1\n\n"
+                "    def calculate_roc_auc(self):\n"
+                "        self.roc_auc = roc_auc_score(self.y_true, self.y_score)\n"
+                "        return self.roc_auc\n\n"
+                "    def calculate_metrics(self):\n"
+                "        acc = self.calculate_accuracy()\n"
+                "        prec = self.calculate_precision()\n"
+                "        rec = self.calculate_recall()\n"
+                "        f1 = self.calculate_f1()\n"
+                "        roc = self.calculate_roc_auc()\n\n"
+                "        print(f\"Accuracy:\\n{acc}\\n\")\n"
+                "        print(f\"Precision:\\n{prec}\\n\")\n"
+                "        print(f\"Recall:\\n{rec}\\n\")\n"
+                "        print(f\"F1 Score:\\n{f1}\\n\")\n"
+                "        print(f\"ROC-AUC Score:\\n{roc}\")\n\n"
+                "        return acc, prec, rec, f1, roc\n\n"
+                "    def evaluate(self):\n"
+                "        return self.calculate_metrics()\n\n"
+                "evaluator = ClassificationMetricsEvaluator()\n"
+                "evaluator.load_dataset()\n"
+                "evaluator.prepare_data()\n"
+                "evaluator.calculate_metrics()\n"
+            )
+
+        # -------------------------------------------------------------------------
+        # Case 3: Simple Accuracy Score (scikit-learn)
+        # -------------------------------------------------------------------------
+        if ("accuracy" in statement_lower or "accuracy_score" in statement_lower) and "precision" not in statement_lower and "f1" not in statement_lower:
             return (
                 "from sklearn.metrics import accuracy_score\n\n"
                 "# Actual labels (ground truth)\n"

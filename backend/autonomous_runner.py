@@ -61,6 +61,30 @@ async def dismiss_modals(page: Page):
         pass
 
 
+def bring_chrome_to_foreground():
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+
+        def enum_cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                if length > 0:
+                    buff = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(hwnd, buff, length + 1)
+                    title = buff.value
+                    if "Chrome" in title or "CodeChef" in title:
+                        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+                        user32.SetForegroundWindow(hwnd)
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+    except Exception:
+        pass
+
+
 async def check_and_handle_login(page: Page) -> bool:
     """Detects if CodeChef is showing a login modal/page or 403 unauthorised, and prompts/waits for login."""
     state = await page.evaluate("""() => {
@@ -75,16 +99,15 @@ async def check_and_handle_login(page: Page) -> bool:
     needs_login = state.get("isLoggedOutMsg") or state.get("is403") or (state.get("hasLoginBtn") and not state.get("hasProfile"))
 
     if needs_login:
+        bring_chrome_to_foreground()
         log("⚠️  CODECHEF SESSION LOGGED OUT / UNAUTHORIZED!")
         log("👉  Please log in to CodeChef in the opened Chrome window (Click 'Login' -> 'Continue with Google').")
         log("👉  The runner will automatically detect your login and start solving immediately!")
 
-        # If on 403 page or has Login button, click Login button so modal/page is ready for user
-        if state.get("is403") or (state.get("hasLoginBtn") and not state.get("hasProfile")):
+        # If on 403, navigate to login page directly
+        if state.get("is403") and "login" not in page.url:
             try:
-                login_btn = page.locator("a, button").filter(has_text=re.compile(r"^login$", re.I)).first
-                if await login_btn.count() > 0 and await login_btn.is_visible():
-                    await login_btn.click()
+                await page.goto("https://www.codechef.com/login", timeout=15000)
             except Exception:
                 pass
 
@@ -525,7 +548,11 @@ async def solve_coding(page: Page):
         await asyncio.sleep(2.5)
 
 
+active_chrome_proc = None
+
+
 async def main():
+    global active_chrome_proc
     log("=" * 65)
     log("   CODECHEF FULLY AUTONOMOUS BROWSER RUNNER (PLAYWRIGHT)       ")
     log("=" * 65)
@@ -533,15 +560,53 @@ async def main():
     async with async_playwright() as p:
         context = None
 
-        # Option 1: Connect to existing Chrome session on port 9222 if user launched it
+        # Option 1: Connect to existing Chrome session on port 9222 if already running
         try:
             cdp_browser = await p.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=2000)
             context = cdp_browser.contexts[0] if cdp_browser.contexts else cdp_browser
             log("Connected to existing Chrome browser on port 9222!")
+            bring_chrome_to_foreground()
         except Exception:
             pass
 
-        # Option 2: Launch persistent profile context
+        # Option 2: Launch visible Chrome window on user's interactive desktop (WinSta0\Default) with CDP
+        if not context:
+            profile_dir = Path(__file__).parent / ".codechef_profile"
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            log(f"Launching visible Chrome on interactive desktop (profile: {profile_dir})...")
+
+            try:
+                import subprocess
+                si = subprocess.STARTUPINFO()
+                si.lpDesktop = r"WinSta0\Default"
+                chrome_exe = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+                if not Path(chrome_exe).exists():
+                    chrome_exe = r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+
+                active_chrome_proc = subprocess.Popen([
+                    chrome_exe,
+                    "--remote-debugging-port=9222",
+                    "--remote-allow-origins=*",
+                    f"--user-data-dir={profile_dir}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    DEFAULT_COURSE_URL
+                ], startupinfo=si)
+
+                for attempt in range(12):
+                    await asyncio.sleep(1.0)
+                    try:
+                        cdp_browser = await p.chromium.connect_over_cdp("http://127.0.0.1:9222", timeout=2000)
+                        context = cdp_browser.contexts[0] if cdp_browser.contexts else cdp_browser
+                        log("Successfully connected to visible Chrome on user desktop over CDP!")
+                        bring_chrome_to_foreground()
+                        break
+                    except Exception:
+                        pass
+            except Exception as e:
+                log(f"Notice launching interactive desktop Chrome: {e}")
+
+        # Option 3: Fallback persistent context
         if not context:
             profile_dir = Path(__file__).parent / ".codechef_profile"
             profile_dir.mkdir(parents=True, exist_ok=True)

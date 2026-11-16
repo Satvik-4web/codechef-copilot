@@ -1,125 +1,100 @@
 import os
 import sys
+import re
 import time
 import asyncio
+from typing import Optional
 from pathlib import Path
 from playwright.async_api import async_playwright, BrowserContext, Page
+
+# Unbuffered stdout for live real-time logging
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 # Add backend directory to sys.path
 sys.path.insert(0, str(Path(__file__).parent.resolve()))
 
 from app.config import settings
+from app.database import get_db
 from app.services.assistant.service import AssistantService
 
 COURSE_FLOW_JS_PATH = Path(__file__).parent.parent / "extension" / "course-flow.js"
+DEFAULT_COURSE_URL = "https://www.codechef.com/learn/course/tiet-uml501-ml-2026"
 
-async def get_or_create_page(p) -> tuple[BrowserContext, Page, bool]:
-    """
-    Connects to an existing Chrome instance on CDP (port 9222) if available.
-    Otherwise, launches a dedicated visible Chrome browser with a persistent profile.
-    """
-    import urllib.request
-    has_cdp = False
-    try:
-        urllib.request.urlopen("http://localhost:9222/json/version", timeout=1)
-        has_cdp = True
-    except Exception:
-        has_cdp = False
+def log(msg: str):
+    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
 
-    if has_cdp:
-        print("[Runner] Found existing Chrome on port 9222! Connecting via CDP...")
-        browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-        context = browser.contexts[0]
-        # Look for existing CodeChef page
-        for pg in context.pages:
-            if "codechef.com" in pg.url:
-                print(f"[Runner] Attached to open CodeChef tab: {pg.url}")
-                return context, pg, True
-        # If no CodeChef tab, use the first page or open a new one
-        page = context.pages[0] if context.pages else await context.new_page()
-        return context, page, True
 
-    # Launch dedicated persistent Chrome browser
-    profile_dir = Path(__file__).parent / ".codechef_profile"
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[Runner] Launching persistent Chrome browser window (profile: {profile_dir})...")
-
-    # Try launching real Chrome first, fallback to bundled chromium
-    try:
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            channel="chrome",
-            headless=False,
-            viewport={"width": 1366, "height": 850},
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check"
-            ]
-        )
-    except Exception:
-        context = await p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir),
-            headless=False,
-            viewport={"width": 1366, "height": 850},
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-first-run",
-                "--no-default-browser-check"
-            ]
-        )
-
-    page = context.pages[0] if context.pages else await context.new_page()
-    if page.url == "about:blank":
-        print("[Runner] Opening CodeChef...")
-        await page.goto("https://www.codechef.com", timeout=30000)
-
-    return context, page, False
+async def get_active_page(context: BrowserContext) -> Optional[Page]:
+    """Finds the most recent open CodeChef tab in the context."""
+    for pg in reversed(context.pages):
+        if not pg.is_closed() and "codechef.com" in pg.url:
+            return pg
+    for pg in reversed(context.pages):
+        if not pg.is_closed():
+            return pg
+    return None
 
 
 async def ensure_course_flow(page: Page):
-    """Injects course-flow.js helper into the page."""
-    if COURSE_FLOW_JS_PATH.exists():
-        flow_code = COURSE_FLOW_JS_PATH.read_text(encoding="utf-8")
-        await page.evaluate(flow_code)
+    """Injects course-flow.js helper into the page if not already present."""
+    try:
+        has_flow = await page.evaluate("() => typeof window.CodeChefCourseFlow !== 'undefined'")
+        if not has_flow and COURSE_FLOW_JS_PATH.exists():
+            flow_code = COURSE_FLOW_JS_PATH.read_text(encoding="utf-8")
+            await page.evaluate(flow_code)
+    except Exception:
+        pass
+
+
+async def dismiss_modals(page: Page):
+    """Dismisses any SweetAlert2 or overlay modal backdrops blocking clicks."""
+    try:
+        await page.keyboard.press("Escape")
+        await page.evaluate("""() => {
+            const swalBtn = document.querySelector(".swal2-confirm, .swal2-close, button[class*='swal2']");
+            if (swalBtn) swalBtn.click();
+            const backdrop = document.querySelector(".swal2-container");
+            if (backdrop) backdrop.remove();
+        }""")
+    except Exception:
+        pass
 
 
 async def click_next_button(page: Page) -> bool:
-    """Clicks Move to next problem, Resume, or header Next button."""
+    """Clicks Move to next problem or header Next button using real Playwright clicks."""
+    await dismiss_modals(page)
+
+    # Priority 1: "Move to next problem" button
+    for text_pat in [re.compile(r"^move to next problem$", re.I), re.compile(r"^move to next$", re.I)]:
+        loc = page.locator("button, a, [role='button'], div[class*='btn']").filter(has_text=text_pat).first
+        if await loc.count() > 0:
+            log("Clicking 'Move to next problem'...")
+            try:
+                await loc.click(force=True, timeout=2500)
+                return True
+            except Exception:
+                pass
+
+    # Priority 2: Header "Next" button
+    for text_pat in [re.compile(r"^next$", re.I), re.compile(r"^next module$", re.I), re.compile(r"^next >$", re.I)]:
+        loc = page.locator("button, a, [role='button']").filter(has_text=text_pat).first
+        if await loc.count() > 0:
+            log("Clicking header 'Next' button...")
+            try:
+                await loc.click(force=True, timeout=2500)
+                return True
+            except Exception:
+                pass
+
+    # Priority 3: DOM fallback click (immune to pointer event interceptions)
     clicked = await page.evaluate("""() => {
-        const isNextText = (raw) => {
-            if (!raw) return false;
-            const clean = raw.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\\s+/g, " ").trim();
-            return clean === "move to next problem" || clean === "move to next" ||
-                   clean === "resume" || clean === "start learning" || clean === "continue" ||
-                   clean === "start" || clean === "next" || clean === "next module" || clean === "next question";
-        };
-
-        const buttons = Array.from(document.querySelectorAll("button, [role='button'], a, div[class*='btn']"));
-        // Priority 0: Resume / Continue button on course syllabus / overview
-        const resumeBtn = buttons.find(b => {
-            const t = (b.innerText || "").toLowerCase().trim();
-            return t === "resume" || t === "start learning" || t === "continue" || t === "start";
-        });
-        if (resumeBtn) {
-            resumeBtn.click();
-            return true;
-        }
-
-        // Priority 1: Move to next problem
-        const moveBtn = buttons.find(b => {
-            const t = (b.innerText || "").toLowerCase().trim();
-            return t === "move to next problem" || t === "move to next";
-        });
-        if (moveBtn) {
-            moveBtn.click();
-            return true;
-        }
-
-        // Priority 2: Header Next button
-        const nextBtn = buttons.find(b => isNextText(b.innerText));
-        if (nextBtn) {
-            nextBtn.click();
+        const isNext = (s) => /^(move to next problem|move to next|next|next module|next question)$/i.test((s || "").trim());
+        const btns = Array.from(document.querySelectorAll("button, a, [role='button'], div[class*='btn']")).filter(b => isNext(b.innerText));
+        if (btns.length > 0) {
+            const target = btns[0];
+            target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            if (typeof target.click === 'function') target.click();
             return true;
         }
         return false;
@@ -127,56 +102,91 @@ async def click_next_button(page: Page) -> bool:
     return clicked
 
 
-async def solve_theory(page: Page):
-    print("[Theory] Skipping reading module...")
-    await page.evaluate("""() => {
-        const btn = Array.from(document.querySelectorAll("button, a")).find(b =>
-            /^(mark as read|mark as complete|continue|got it)$/i.test((b.innerText || "").trim())
-        );
-        if (btn) btn.click();
+async def handle_course_overview(page: Page) -> bool:
+    """Handles course syllabus/overview page by clicking Resume / Start button."""
+    resume_patterns = [
+        re.compile(r"^resume$", re.I),
+        re.compile(r"^start learning$", re.I),
+        re.compile(r"^continue$", re.I),
+        re.compile(r"^start$", re.I),
+    ]
+
+    for pat in resume_patterns:
+        loc = page.locator("button, a, [role='button']").filter(has_text=pat).first
+        if await loc.count() > 0 and await loc.is_visible():
+            log(f"Course Overview: Found '{await loc.inner_text()}' button! Clicking to enter problems...")
+            await loc.click()
+            await asyncio.sleep(3.0)
+            return True
+
+    # Try clicking first topic/lesson item
+    clicked = await page.evaluate("""() => {
+        const item = document.querySelector("[class*='topic'], [class*='lesson'], [class*='item'], div[class*='problem']");
+        if (item) { item.click(); return true; }
+        return false;
     }""")
-    await asyncio.sleep(0.5)
+    if clicked:
+        log("Course Overview: Clicked topic item...")
+        await asyncio.sleep(3.0)
+        return True
+
+    return False
+
+
+async def solve_theory(page: Page):
+    log("[Theory] Skipping reading module...")
+    # Click "Mark as read" or "Continue" if present
+    for pat in [re.compile(r"^(mark as read|mark as complete|continue|got it)$", re.I)]:
+        loc = page.locator("button, a").filter(has_text=pat).first
+        if await loc.count() > 0 and await loc.is_visible():
+            log(f"[Theory] Clicked '{await loc.inner_text()}'...")
+            await loc.click()
+            await asyncio.sleep(0.5)
+            break
+
     await click_next_button(page)
     await asyncio.sleep(2.0)
 
 
 async def solve_mcq(page: Page):
-    print("[MCQ] Extracting question and options...")
+    log("[MCQ] Extracting question and choices...")
     data = await page.evaluate("""() => {
         const titleEl = document.querySelector("h1, h2, h3, [class*='title'], [class*='Title']");
         const title = titleEl ? titleEl.innerText.trim() : "";
         const stmtEl = document.querySelector("[class*='statement'], [class*='Statement'], main, #problem-statement");
         const statement = stmtEl ? stmtEl.innerText.trim() : document.body.innerText.slice(0, 3000);
 
-        const choices = window.CodeChefCourseFlow ? window.CodeChefCourseFlow.options(document).map(c => c.text) : [];
+        let choices = [];
+        if (window.CodeChefCourseFlow) {
+            choices = window.CodeChefCourseFlow.options(document).map(c => c.text);
+        }
+        if (!choices || choices.length === 0) {
+            choices = Array.from(document.querySelectorAll("label, div[role='radio'], [class*='option'], [class*='choice']"))
+                .map(el => el.innerText.trim())
+                .filter(t => t.length > 0 && t.length < 300);
+        }
         return { title, statement, choices };
     }""")
 
     choices = data.get("choices", [])
-    if not choices:
-        # Fallback query
-        choices = await page.evaluate("""() => {
-            return Array.from(document.querySelectorAll("label, div[role='radio'], [class*='option'], [class*='choice']"))
-                .map(el => el.innerText.trim())
-                .filter(t => t.length > 0 && t.length < 300);
-        }""")
-
-    print(f"[MCQ] Question: {data.get('title') or data.get('statement')[:100]}...")
-    print(f"[MCQ] Found {len(choices)} options.")
+    question = data.get("statement") or data.get("title") or "MCQ Question"
+    log(f"[MCQ] Question: {question[:80]}...")
+    log(f"[MCQ] Options ({len(choices)}): {choices}")
 
     if not choices:
-        print("[MCQ] No choices found! Advancing...")
+        log("[MCQ] No choices found! Advancing...")
         await click_next_button(page)
         return
 
     # Solve via AI
     ai_res = await AssistantService.solve_mcq(
-        question=data.get("statement") or data.get("title"),
+        question=question,
         options=choices,
-        context=data.get("statement")
+        context=question
     )
     correct_idx = ai_res.get("correct_option_index", 0)
-    print(f"[MCQ] AI selected option {correct_idx}: {choices[correct_idx] if correct_idx < len(choices) else ''}")
+    choice_text = choices[correct_idx] if correct_idx < len(choices) else ""
+    log(f"[MCQ] AI selected option {correct_idx + 1}: '{choice_text}'")
 
     # Click option
     await page.evaluate("""(idx) => {
@@ -196,28 +206,33 @@ async def solve_mcq(page: Page):
         const cards = document.querySelectorAll("label, div[role='radio'], [class*='option'], [class*='choice']");
         if (cards[idx]) cards[idx].click();
     }""", correct_idx)
-
     await asyncio.sleep(0.5)
 
     # Click Submit if present
-    await page.evaluate("""() => {
-        const submitBtn = Array.from(document.querySelectorAll("button, [role='button']")).find(b =>
-            /^(submit|submit answer|check)$/i.test((b.innerText || "").trim())
-        );
-        if (submitBtn) submitBtn.click();
-    }""")
+    submit_loc = page.locator("button, [role='button']").filter(has_text=re.compile(r"^(submit|submit answer|check)$", re.I)).first
+    if await submit_loc.count() > 0:
+        log("[MCQ] Clicking Submit button...")
+        try:
+            await submit_loc.click(force=True, timeout=2500)
+        except Exception:
+            await page.evaluate("""() => {
+                const btn = Array.from(document.querySelectorAll("button, [role='button']")).find(b =>
+                    /^(submit|submit answer|check)$/i.test((b.innerText || "").trim())
+                );
+                if (btn) btn.click();
+            }""")
+        await asyncio.sleep(1.0)
 
-    await asyncio.sleep(1.2)
-    # Check feedback
+    # Check feedback status
     status = await page.evaluate("() => window.CodeChefCourseFlow ? window.CodeChefCourseFlow.mcqResult(document) : 'pending'")
-    print(f"[MCQ] Result status: {status}")
+    log(f"[MCQ] Feedback status: {status}")
 
     await click_next_button(page)
     await asyncio.sleep(2.0)
 
 
 async def solve_coding(page: Page):
-    # Check if worked example
+    # Check if worked example (Run button present, no Submit button)
     is_worked_example = await page.evaluate("""() => {
         const buttons = Array.from(document.querySelectorAll("button, [role='button'], a"));
         const hasSubmit = buttons.some(b => /^(submit|submit code)$/i.test((b.innerText || "").trim()));
@@ -226,22 +241,19 @@ async def solve_coding(page: Page):
     }""")
 
     if is_worked_example:
-        print("[Worked Example] Detected tutorial lab (no Submit button). Clicking ▶ Run...")
-        await page.evaluate("""() => {
-            const runBtn = Array.from(document.querySelectorAll("button, [role='button']")).find(b =>
-                /^(run|run code|▶ run)$/i.test((b.innerText || "").trim())
-            );
-            if (runBtn) runBtn.click();
-        }""")
-        print("[Worked Example] Waiting 3.5s for terminal execution...")
+        log("[Worked Example] Tutorial lab detected (no Submit button). Clicking ▶ Run...")
+        run_loc = page.locator("button, [role='button']").filter(has_text=re.compile(r"^(run|run code|▶ run)$", re.I)).first
+        if await run_loc.count() > 0:
+            await run_loc.click()
+        log("[Worked Example] Waiting 3.5s for terminal execution...")
         await asyncio.sleep(3.5)
-        print("[Worked Example] Finished. Advancing to next module...")
+        log("[Worked Example] Advancing to next module...")
         await click_next_button(page)
         await asyncio.sleep(2.0)
         return
 
     # Graded coding lab
-    print("[Coding] Extracting problem data and editor content...")
+    log("[Coding] Graded problem detected! Extracting requirements and editor state...")
     problem_data = await page.evaluate("""() => {
         const titleEl = document.querySelector("#problem-statement h1, h1.title, .problem-title h3, h2.title, h1");
         const title = titleEl ? titleEl.innerText.trim() : "Task";
@@ -250,8 +262,14 @@ async def solve_coding(page: Page):
 
         let editorCode = "";
         if (window.monaco && window.monaco.editor) {
-            const models = window.monaco.editor.getModels();
-            if (models.length > 0) editorCode = models[0].getValue();
+            const editors = window.monaco.editor.getEditors ? window.monaco.editor.getEditors() : [];
+            if (editors.length > 0 && editors[0].getModel()) {
+                editorCode = editors[0].getModel().getValue();
+            } else {
+                const models = window.monaco.editor.getModels();
+                const pyModel = models.find(m => m.uri && m.uri.path && m.uri.path.endsWith('.py')) || models[0];
+                if (pyModel) editorCode = pyModel.getValue();
+            }
         }
         if (!editorCode) {
             const viewLines = document.querySelectorAll(".view-lines .view-line");
@@ -261,15 +279,39 @@ async def solve_coding(page: Page):
         return { title, statement, editorCode };
     }""")
 
-    title = problem_data.get("title")
-    statement = problem_data.get("statement")
-    editor_code = problem_data.get("editorCode")
+    title = problem_data.get("title", "Coding Problem")
+    statement = problem_data.get("statement", "")
+    editor_code = problem_data.get("editorCode", "")
 
-    print(f"[Coding] Problem: {title}")
-    print("[Coding] Requesting solution from Gemini AI...")
+    # Wait for editor code if Monaco is still initializing
+    if not editor_code or len(editor_code.strip()) == 0:
+        for _ in range(8):
+            await asyncio.sleep(0.5)
+            editor_code = await page.evaluate("""() => {
+                let code = "";
+                if (window.monaco && window.monaco.editor) {
+                    const editors = window.monaco.editor.getEditors ? window.monaco.editor.getEditors() : [];
+                    if (editors.length > 0 && editors[0].getModel()) {
+                        code = editors[0].getModel().getValue();
+                    } else {
+                        const models = window.monaco.editor.getModels();
+                        const pyModel = models.find(m => m.uri && m.uri.path && m.uri.path.endsWith('.py')) || models[0];
+                        if (pyModel) code = pyModel.getValue();
+                    }
+                }
+                if (!code) {
+                    const viewLines = document.querySelectorAll(".view-lines .view-line");
+                    if (viewLines.length > 0) code = Array.from(viewLines).map(l => l.innerText).join("\\n");
+                }
+                return code;
+            }""")
+            if editor_code and len(editor_code.strip()) > 0:
+                break
 
-    from app.database import get_db
-    from app.services.assistant.service import AssistantService
+    log(f"[Coding] Problem: '{title}'")
+    if editor_code:
+        log(f"[Coding] Starter template loaded ({len(editor_code.splitlines())} lines).")
+    log("[Coding] Requesting solution from Gemini AI...")
 
     db = next(get_db())
     sol_res = await AssistantService.practice_solution(
@@ -283,69 +325,117 @@ async def solve_coding(page: Page):
     )
     solution_code = sol_res.get("generated_code")
     if not solution_code:
-        print("[Coding] No solution code returned!")
+        log("[Coding] Warning: No solution code returned!")
         return
 
-    # Invert/inject into Monaco and save
     current_code = solution_code
+
+    # Submit and heal loop
     for attempt in range(4):
-        print(f"[Coding] Injecting solution (attempt {attempt + 1}/4)...")
+        log(f"[Coding] Injecting solution into Monaco editor (attempt {attempt + 1}/4)...")
         await page.evaluate("""(code) => {
             if (window.monaco && window.monaco.editor) {
-                const models = window.monaco.editor.getModels();
-                if (models.length > 0) {
-                    models[0].setValue(code);
+                let targetModel = null;
+                const editors = window.monaco.editor.getEditors ? window.monaco.editor.getEditors() : [];
+                if (editors.length > 0 && editors[0].getModel()) {
+                    targetModel = editors[0].getModel();
+                    try { editors[0].focus(); } catch (_) {}
+                }
+                if (!targetModel) {
+                    const models = window.monaco.editor.getModels();
+                    targetModel = models.find(m => m.uri && m.uri.path && m.uri.path.endsWith('.py')) || models[0];
+                }
+                if (targetModel) {
+                    targetModel.setValue(code);
                 }
             }
         }""", current_code)
 
-        # Trigger Save (Ctrl+S)
+        # Focus editor and trigger Save (Ctrl+S) so Monaco flushes file to container disk
+        log("[Coding] Saving file to container disk (Ctrl+S)...")
+        try:
+            editor_loc = page.locator(".monaco-editor, .view-lines").first
+            if await editor_loc.count() > 0:
+                await editor_loc.click(timeout=1000)
+        except Exception:
+            pass
         await page.keyboard.press("Control+s")
         await asyncio.sleep(0.5)
 
         # Click Submit
-        print("[Coding] Clicking Submit button...")
-        await page.evaluate("""() => {
-            const submitBtn = Array.from(document.querySelectorAll("button, [role='button']")).find(b =>
-                /^(submit|submit code)$/i.test((b.innerText || "").trim())
-            );
-            if (submitBtn) submitBtn.click();
-        }""")
+        log("[Coding] Clicking Submit button...")
+        await dismiss_modals(page)
+        submit_loc = page.locator("button, [role='button']").filter(has_text=re.compile(r"^(submit|submit code)$", re.I)).first
+        if await submit_loc.count() > 0:
+            try:
+                await submit_loc.click(force=True, timeout=2500)
+            except Exception:
+                await page.evaluate("""() => {
+                    const btn = Array.from(document.querySelectorAll("button, [role='button']")).find(b =>
+                        /^(submit|submit code)$/i.test((b.innerText || "").trim())
+                    );
+                    if (btn) btn.click();
+                }""")
+        else:
+            await page.evaluate("""() => {
+                const btn = Array.from(document.querySelectorAll("button, [role='button']")).find(b =>
+                    /^(submit|submit code)$/i.test((b.innerText || "").trim())
+                );
+                if (btn) btn.click();
+            }""")
 
         # Poll test results
-        print("[Coding] Waiting for tests to evaluate...")
+        log("[Coding] Waiting for test results...")
         passed = False
         for poll in range(40):
             await asyncio.sleep(1.0)
-            res = await page.evaluate("() => window.CodeChefCourseFlow ? window.CodeChefCourseFlow.codeResult(document) : { status: 'pending', passed: 0, total: 0 }")
-            status = res.get("status")
-            total = res.get("total", 0)
-            passed_cnt = res.get("passed", 0)
+            await dismiss_modals(page)
 
-            if total > 0:
-                print(f"[Coding] Tests: {passed_cnt}/{total} ticked (status: {status})")
-
-            if status == "passed":
-                print("[Coding] ALL TESTS PASSED (green ticks confirmed)!")
+            # Direct check for completion buttons or congratulatory text
+            move_btn = page.locator("button, a, [role='button']").filter(has_text=re.compile(r"^move to next problem$", re.I)).first
+            has_move = (await move_btn.count() > 0) and (await move_btn.is_visible())
+            is_solved_text = await page.evaluate("""() => {
+                const b = document.body ? document.body.innerText : '';
+                return /you have solved the problem/i.test(b) || /congratulations/i.test(b);
+            }""")
+            if has_move or is_solved_text:
+                log("[Coding] PROBLEM SOLVED! Detected 'Move to next problem' / 'Congratulations'!")
                 passed = True
                 break
 
-            if status == "failed" and poll > 3:
-                print("[Coding] Test failures detected!")
+            await ensure_course_flow(page)
+            res = await page.evaluate("() => window.CodeChefCourseFlow ? window.CodeChefCourseFlow.codeResult(document) : { status: 'pending', passed: 0, total: 0, failed: 0 }")
+            status = res.get("status")
+            total = res.get("total", 0)
+            passed_cnt = res.get("passed", 0)
+            failed_cnt = res.get("failed", 0)
+
+            if total > 0:
+                log(f"[Coding] Tests: {passed_cnt}/{total} passed, {failed_cnt} failed (status: {status})")
+
+            if status == "passed":
+                log("[Coding] ALL TESTS PASSED (green ticks confirmed)!")
+                passed = True
+                break
+
+            if status == "failed" and poll >= 2:
+                log(f"[Coding] Test failure detected early ({failed_cnt} failed)! Proceeding to self-heal...")
                 break
 
         if passed:
-            print("[Coding] Advancing to next problem...")
+            log("[Coding] Problem solved! Advancing to next...")
             await asyncio.sleep(0.5)
             await click_next_button(page)
             await asyncio.sleep(2.5)
             return
 
         if attempt < 3:
-            print(f"[Coding] Triggering Auto-Heal (attempt {attempt + 1}/3)...")
+            log(f"[Coding] Self-healing tests (attempt {attempt + 1}/3)...")
             error_output = await page.evaluate("""() => {
                 const res = window.CodeChefCourseFlow ? window.CodeChefCourseFlow.codeResult(document) : {};
-                return res.output || document.body.innerText.slice(0, 2000);
+                const testsEl = document.querySelector("[class*='tests'], [class*='test-results'], [data-testid='test-results'], #tab-tests");
+                const testsText = testsEl ? testsEl.innerText : "";
+                return (testsText + "\\n" + (res.output || "") + "\\n" + document.body.innerText.slice(0, 2000)).slice(0, 3000);
             }""")
             healed = await AssistantService.auto_heal(
                 current_code=current_code,
@@ -358,58 +448,80 @@ async def solve_coding(page: Page):
             if fixed:
                 current_code = fixed
 
-    print("[Coding] Healing attempts exhausted. Moving forward...")
+    log("[Coding] Retries exhausted. Advancing...")
     await click_next_button(page)
     await asyncio.sleep(2.0)
 
 
 async def main():
-    print("=" * 65)
-    print("   CODECHEF FULLY AUTONOMOUS SPEEDRUNNER (PLAYWRIGHT DIRECT)    ")
-    print("=" * 65)
+    log("=" * 65)
+    log("   CODECHEF FULLY AUTONOMOUS BROWSER RUNNER (PLAYWRIGHT)       ")
+    log("=" * 65)
 
     async with async_playwright() as p:
-        context, page, is_attached = await get_or_create_page(p)
+        profile_dir = Path(__file__).parent / ".codechef_profile"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        log(f"Launching persistent Chrome window (profile: {profile_dir})...")
 
-        print("\n[Runner] Ready! Make sure you are logged in and on the course page:")
-        print("          https://www.codechef.com/learn/course/...")
-        print("[Runner] Starting autonomous processing loop in 3 seconds...\n")
-        await asyncio.sleep(3.0)
+        try:
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                channel="chrome",
+                headless=False,
+                viewport={"width": 1366, "height": 850},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check"
+                ]
+            )
+        except Exception:
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                headless=False,
+                viewport={"width": 1366, "height": 850},
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-first-run",
+                    "--no-default-browser-check"
+                ]
+            )
+
+        # Get or create initial page and navigate directly to the course
+        page = await get_active_page(context)
+        if not page:
+            page = await context.new_page()
+
+        if "codechef.com" not in page.url:
+            log(f"Navigating to course: {DEFAULT_COURSE_URL}...")
+            await page.goto(DEFAULT_COURSE_URL, timeout=45000)
+
+        log("Ready! Starting autonomous continuous loop in 2 seconds...\n")
+        await asyncio.sleep(2.0)
 
         step = 1
         while True:
             try:
-                # Ensure page is open
-                if page.is_closed():
-                    print("[Runner] Browser page was closed. Exiting.")
-                    break
-
-                url = page.url
-                if "codechef.com/learn/course/" not in url and "codechef.com" in url:
-                    print(f"[Runner] Waiting for course URL (current: {url})...")
+                # Dynamically get active page
+                page = await get_active_page(context)
+                if not page or page.is_closed():
+                    log("No open pages. Waiting 3s...")
                     await asyncio.sleep(3.0)
                     continue
 
-                # Check for Course Overview / Syllabus page without /problems/
-                if "/problems/" not in url:
-                    clicked_resume = await page.evaluate("""() => {
-                        const btns = Array.from(document.querySelectorAll("button, [role='button'], a, div[class*='btn']"));
-                        const resume = btns.find(b => /^(resume|start learning|continue|start)$/i.test((b.innerText || "").trim()));
-                        if (resume) {
-                            resume.click();
-                            return true;
-                        }
-                        const firstItem = document.querySelector("[class*='item'], [class*='lesson'], [class*='chapter'], [class*='topic']");
-                        if (firstItem) {
-                            firstItem.click();
-                            return true;
-                        }
-                        return false;
-                    }""")
-                    if clicked_resume:
-                        print("[Runner] Course Overview detected. Clicked 'Resume' button to enter questions...")
+                url = page.url
+
+                # If on course overview / syllabus without /problems/, click Resume!
+                if "codechef.com/learn/course/" in url and "/problems/" not in url:
+                    entered = await handle_course_overview(page)
+                    if entered:
                         await asyncio.sleep(3.0)
                         continue
+
+                if "codechef.com/learn/course/" not in url:
+                    log(f"Waiting for course page (current URL: {url})...")
+                    await asyncio.sleep(3.0)
+                    continue
 
                 await ensure_course_flow(page)
                 screen = await page.evaluate("""() => {
@@ -421,11 +533,11 @@ async def main():
 
                 stype = screen.get("type", "unknown")
                 is_passed = screen.get("isPassed", False)
-                print(f"\n--- [Step {step}] URL: {url} ---")
-                print(f"[Runner] Detected screen type: {stype.upper()} (Already passed: {is_passed})")
+                log(f"\n--- [Step {step}] URL: {url} ---")
+                log(f"Screen Type: {stype.upper()} (Already passed: {is_passed})")
 
                 if is_passed:
-                    print("[Runner] Screen already passed! Advancing to next...")
+                    log("Screen already passed! Advancing to next...")
                     await click_next_button(page)
                     await asyncio.sleep(2.0)
                 elif stype == "theory":
@@ -435,10 +547,10 @@ async def main():
                 elif stype == "coding":
                     await solve_coding(page)
                 elif stype == "loading":
-                    print("[Runner] Editor or container loading, waiting...")
+                    log("Editor or container is loading, waiting...")
                     await asyncio.sleep(2.5)
                 else:
-                    print("[Runner] Unknown screen, attempting Next...")
+                    log("Unknown screen, attempting Next...")
                     await click_next_button(page)
                     await asyncio.sleep(2.0)
 
@@ -446,7 +558,7 @@ async def main():
                 await asyncio.sleep(1.0)
 
             except Exception as e:
-                print(f"[Runner] Error in loop: {e}")
+                log(f"Loop notice: {e}")
                 await asyncio.sleep(3.0)
 
 

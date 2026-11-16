@@ -93,45 +93,108 @@
   }
 
   function codeResult(doc) {
-    const body = text(doc.body || doc);
+    const rootEl = doc.body || doc;
+    const body = text(rootEl);
     const sectionMatch = body.match(/Test results([\s\S]*?)(?:Congratulations|Move to next problem|\bPROBLEMS\b|$)/i);
     const section = sectionMatch ? sectionMatch[1] : body;
 
-    const tests = [];
-    const lines = section.split("\n");
-    for (const line of lines) {
-      const trimmed = line.trim();
-      const match = trimmed.match(/^([✓✔✗❌✘])?\s*Test\s*(\d+)\s*:\s*(.+)$/i);
-      if (match) {
-        const mark = match[1] || "";
-        const isPassed = mark === "✓" || mark === "✔";
-        const isFailed = mark === "✗" || mark === "❌" || mark === "✘";
-        tests.push({ num: match[2], desc: match[3], isPassed, isFailed, raw: trimmed });
-      }
-    }
-
-    const testSet = new Set(Array.from(section.matchAll(/Test\s+(\d+)\s*:/gi), (m) => m[1]));
-    const total = tests.length > 0 ? tests.length : testSet.size;
-    const passedCount = tests.filter((t) => t.isPassed).length;
-    const failedCount = tests.filter((t) => t.isFailed).length;
-    const allTicked = total > 0 && passedCount === total;
-
-    const running = /\brunning tests\b/i.test(section) || /\brunning\.\.\./i.test(body);
-
-    // Solved check: matches both single-line and multiline "Congratulations ... You have solved the problem" and "Move to next problem" button
+    // 1. Direct Solved check: "Congratulations ... You have solved the problem" or "Move to next problem" button
     const solved = /congratulations[\s\S]{0,100}you have solved the problem/i.test(body) ||
       /you have solved the problem/i.test(body) ||
       hasButton(doc, /^move to next problem$/i) ||
       /\bmove to next problem\b/i.test(body);
 
+    if (solved) {
+      return {
+        status: "passed",
+        total: 1,
+        passed: 1,
+        failed: 0,
+        count: 1,
+        output: section.slice(0, 3000)
+      };
+    }
+
+    const running = /\brunning tests\b/i.test(body) || /\brunning\.\.\./i.test(body);
+
+    // 2. Inspect DOM elements for individual Test items and check their SVG icons / CSS colors
+    const allEls = qAll(doc, "li, div, p, span");
+    const testRowEls = [];
+    for (const el of allEls) {
+      const t = text(el);
+      if (/^Test\s*\d+\s*:/i.test(t)) {
+        // Find leaf container for the test row
+        const hasChildTest = Array.from(el.children || []).some((c) => /^Test\s*\d+\s*:/i.test(text(c)));
+        if (!hasChildTest) {
+          testRowEls.push(el);
+        }
+      }
+    }
+
+    let passedCount = 0;
+    let failedCount = 0;
+    const testSet = new Set(Array.from(section.matchAll(/Test\s+(\d+)\s*:/gi), (m) => m[1]));
+    const total = testRowEls.length > 0 ? testRowEls.length : testSet.size;
+
+    for (const testEl of testRowEls) {
+      const row = testEl.closest("li, div[class*='test'], div[class*='row'], div[class*='item']") || testEl.parentElement || testEl;
+      const rowHtml = row.outerHTML || "";
+      const svgs = Array.from(row.querySelectorAll("svg, i, [class*='icon']"));
+      
+      let computedColors = "";
+      try {
+        computedColors += window.getComputedStyle(row).color + " ";
+        for (const s of svgs) {
+          const cs = window.getComputedStyle(s);
+          computedColors += (cs.color || "") + " " + (cs.stroke || "") + " " + (cs.fill || "") + " ";
+        }
+      } catch (_) {}
+
+      const allInfo = rowHtml + " " + computedColors;
+
+      const isGreen = /green|success|emerald|#22c55e|#10b981|#16a34a|rgb\(34,\s*197,\s*94\)|rgb\(16,\s*185,\s*129\)/i.test(allInfo) ||
+                      /(?:✓|✔)/.test(text(row));
+      const isRed = /red|fail|error|rose|danger|destructive|#ef4444|#dc2626|#b91c1c|#f87171|rgb\(239,\s*68,\s*68\)|rgb\(248,\s*113,\s*113\)|rgb\(220,\s*38,\s*38\)/i.test(allInfo) ||
+                    /(?:✗|❌|✘)/.test(text(row));
+
+      if (isGreen && !isRed) {
+        passedCount++;
+      } else if (isRed) {
+        failedCount++;
+      }
+    }
+
+    // Also check text-based unicode checkmarks as fallback
+    if (passedCount === 0 && failedCount === 0) {
+      for (const line of section.split("\n")) {
+        const trimmed = line.trim();
+        const m = trimmed.match(/^([✓✔✗❌✘])?\s*Test\s*(\d+)\s*:\s*(.+)$/i);
+        if (m) {
+          const mark = m[1] || "";
+          if (mark === "✓" || mark === "✔") passedCount++;
+          if (mark === "✗" || mark === "❌" || mark === "✘") failedCount++;
+        }
+      }
+    }
+
     const hasExplicitFailures = failedCount > 0 ||
-      /\b(failed|wrong answer|runtime error|compilation error|traceback)\b/i.test(section) ||
+      /\b(failed|wrong answer|runtime error|compilation error|traceback|syntaxerror|test failed)\b/i.test(section) ||
       /(?:❌|✘|✗)\s*Test\s*\d+|Test\s*\d+[^\n]{0,80}(?:❌|✘|✗)/i.test(section);
 
+    const allTicked = total > 0 && passedCount === total;
     const isPassed = allTicked || (solved && total > 0 && !hasExplicitFailures);
 
+    let status = "pending";
+    if (running) {
+      status = "pending";
+    } else if (isPassed) {
+      status = "passed";
+    } else if (hasExplicitFailures || failedCount > 0) {
+      status = "failed";
+    }
+
     return {
-      status: running ? "pending" : isPassed ? "passed" : hasExplicitFailures ? "failed" : "pending",
+      status,
       total,
       passed: passedCount,
       failed: failedCount,

@@ -85,16 +85,27 @@ async def ensure_course_flow(page: Page):
 
 
 async def click_next_button(page: Page) -> bool:
-    """Clicks Move to next problem or header Next button."""
+    """Clicks Move to next problem, Resume, or header Next button."""
     clicked = await page.evaluate("""() => {
         const isNextText = (raw) => {
             if (!raw) return false;
             const clean = raw.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\\s+/g, " ").trim();
             return clean === "move to next problem" || clean === "move to next" ||
-                   clean === "next" || clean === "next module" || clean === "next question";
+                   clean === "resume" || clean === "start learning" || clean === "continue" ||
+                   clean === "start" || clean === "next" || clean === "next module" || clean === "next question";
         };
 
         const buttons = Array.from(document.querySelectorAll("button, [role='button'], a, div[class*='btn']"));
+        // Priority 0: Resume / Continue button on course syllabus / overview
+        const resumeBtn = buttons.find(b => {
+            const t = (b.innerText || "").toLowerCase().trim();
+            return t === "resume" || t === "start learning" || t === "continue" || t === "start";
+        });
+        if (resumeBtn) {
+            resumeBtn.click();
+            return true;
+        }
+
         // Priority 1: Move to next problem
         const moveBtn = buttons.find(b => {
             const t = (b.innerText || "").toLowerCase().trim();
@@ -378,6 +389,27 @@ async def main():
                     print(f"[Runner] Waiting for course URL (current: {url})...")
                     await asyncio.sleep(3.0)
                     continue
+
+                # Check for Course Overview / Syllabus page without /problems/
+                if "/problems/" not in url:
+                    clicked_resume = await page.evaluate("""() => {
+                        const btns = Array.from(document.querySelectorAll("button, [role='button'], a, div[class*='btn']"));
+                        const resume = btns.find(b => /^(resume|start learning|continue|start)$/i.test((b.innerText || "").trim()));
+                        if (resume) {
+                            resume.click();
+                            return true;
+                        }
+                        const firstItem = document.querySelector("[class*='item'], [class*='lesson'], [class*='chapter'], [class*='topic']");
+                        if (firstItem) {
+                            firstItem.click();
+                            return true;
+                        }
+                        return false;
+                    }""")
+                    if clicked_resume:
+                        print("[Runner] Course Overview detected. Clicked 'Resume' button to enter questions...")
+                        await asyncio.sleep(3.0)
+                        continue
 
                 await ensure_course_flow(page)
                 screen = await page.evaluate("""() => {

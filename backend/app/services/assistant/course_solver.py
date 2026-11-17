@@ -130,7 +130,46 @@ class CourseProblemSolver:
             )
 
         # -------------------------------------------------------------------------
-        # Case 3: Simple Accuracy Score (scikit-learn)
+        # Case 3: Random Forest Classifier (YTQA1113 / Decision Trees & Ensembles)
+        # -------------------------------------------------------------------------
+        if "randomforestclassifier" in code.lower() or "random forest" in statement_lower or "random forest" in title_lower:
+            return (
+                "import pandas as pd\n"
+                "import numpy as np\n"
+                "from sklearn.ensemble import RandomForestClassifier\n\n"
+                "# TODO: You may change feature names and values if you want\n"
+                "data = {\n"
+                "    \"Study_Hours\": [2, 3, 4, 5, 6],\n"
+                "    \"Attendance\": [60, 70, 80, 85, 90],\n"
+                "    \"Pass\": [0, 0, 1, 1, 1]\n"
+                "}\n\n"
+                "# Convert your dataset into a DataFrame\n"
+                "df = pd.DataFrame(data)\n\n"
+                "# Select the feature columns\n"
+                "X = df[['Study_Hours', 'Attendance']]\n\n"
+                "# Select the target column\n"
+                "y = df['Pass']\n\n"
+                "# Train a RandomForestClassifier\n"
+                "model = RandomForestClassifier(\n"
+                "    n_estimators=100,\n"
+                "    max_depth=3,\n"
+                "    min_samples_leaf=2,\n"
+                "    random_state=42\n"
+                ")\n"
+                "model.fit(X, y)\n\n"
+                "# Generate predictions using the trained model\n"
+                "predictions = model.predict(X)\n\n"
+                "# Probability estimates for each class (Fail, Pass)\n"
+                "probabilities = model.predict_proba(X)\n\n"
+                "# Round the probabilities to 1 decimal place\n"
+                "probabilities = np.round(probabilities, 1)\n\n"
+                "# Display results\n"
+                "print(\"Predictions:\", predictions)\n"
+                "print(\"Probabilities:\\n\", probabilities)\n"
+            )
+
+        # -------------------------------------------------------------------------
+        # Case 4: Simple Accuracy Score (scikit-learn)
         # -------------------------------------------------------------------------
         if ("accuracy" in statement_lower or "accuracy_score" in statement_lower) and "precision" not in statement_lower and "f1" not in statement_lower:
             return (

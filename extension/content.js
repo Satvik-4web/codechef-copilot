@@ -505,6 +505,15 @@
       }
 
       setStatus(attempt === 0 ? "Submitting code..." : `Fixing tests (${attempt}/3)...`);
+
+      // Ensure generated solution is injected and saved to Monaco before submitting!
+      if (code && code.trim().length > 20 && attempt === 0) {
+        setStatus("Injecting solution...");
+        injectCodeDirectly(code);
+        triggerSaveFile();
+        await delay(1200);
+      }
+
       await delay(600);
 
       // Submit code
